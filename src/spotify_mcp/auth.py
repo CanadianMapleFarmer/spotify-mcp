@@ -1,6 +1,8 @@
 import base64
+import ipaddress
 import json
 import os
+import tempfile
 import time
 from dataclasses import asdict, dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -8,7 +10,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 
-from .settings import SCOPES, Settings
+from .settings import DEFAULT_REDIRECT_URI, SCOPES, Settings
 
 AUTHORIZE_URL = "https://accounts.spotify.com/authorize"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
@@ -39,16 +41,26 @@ class Token:
 def load_token(settings: Settings) -> Token | None:
     if not settings.token_path.exists():
         return None
-    return Token(**json.loads(settings.token_path.read_text()))
+    try:
+        return Token(**json.loads(settings.token_path.read_text()))
+    except (ValueError, TypeError, OSError) as e:
+        raise AuthError(f"Corrupt token cache at {settings.token_path} ({e}). Run `spotify-mcp login` again.") from e
 
 
 def save_token(settings: Settings, token: Token) -> None:
     settings.config_dir.mkdir(parents=True, exist_ok=True)
     os.chmod(settings.config_dir, 0o700)
-    tmp = settings.token_path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(asdict(token), indent=2))
-    os.chmod(tmp, 0o600)
-    tmp.replace(settings.token_path)
+    fd, tmp_name = tempfile.mkstemp(dir=settings.config_dir, prefix="token.", suffix=".tmp")
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(json.dumps(asdict(token), indent=2))
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_name, settings.token_path)
+    except BaseException:
+        os.unlink(tmp_name)
+        raise
 
 
 def clear_token(settings: Settings) -> None:
@@ -89,10 +101,18 @@ async def exchange_code(http: httpx.AsyncClient, settings: Settings, code: str) 
     return _token_from(settings, r.json())
 
 
+def _error_field(r: httpx.Response) -> str | None:
+    try:
+        parsed = r.json()
+    except ValueError:
+        return None
+    return parsed.get("error") if isinstance(parsed, dict) else None
+
+
 async def refresh(http: httpx.AsyncClient, settings: Settings, token: Token) -> Token:
     data = {"grant_type": "refresh_token", "refresh_token": token.refresh_token}
     r = await http.post(TOKEN_URL, headers=_basic_auth(settings), data=data)
-    if r.status_code == 400 and r.json().get("error") == "invalid_grant":
+    if r.status_code == 400 and _error_field(r) == "invalid_grant":
         clear_token(settings)
         raise AuthError("Refresh token expired or revoked. Run `spotify-mcp login` again.")
     if r.status_code != 200:
@@ -102,8 +122,19 @@ async def refresh(http: httpx.AsyncClient, settings: Settings, token: Token) -> 
     return new
 
 
+def _is_loopback_host(host: str) -> bool:
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return host == "localhost"
+
+
 def wait_for_code(settings: Settings, state: str, timeout: float = CALLBACK_TIMEOUT_S) -> str:
     host, port, path = settings.callback
+    if not _is_loopback_host(host):
+        raise AuthError(
+            f"SPOTIFY_REDIRECT_URI must use a loopback host; register {DEFAULT_REDIRECT_URI} in the Spotify dashboard."
+        )
     result: dict[str, str] = {}
 
     class Handler(BaseHTTPRequestHandler):
@@ -114,24 +145,33 @@ def wait_for_code(settings: Settings, state: str, timeout: float = CALLBACK_TIME
                 self.send_error(404)
                 return
             if query.get("state") != state:
-                result["error"] = "state_mismatch"
-                self.send_response(400)
-                self.send_header("Content-Type", "text/html")
-                self.end_headers()
-                self.wfile.write(FAILURE_HTML.format(message="State mismatch; login was not completed.").encode())
+                result["state_mismatch"] = "1"
+                self._respond(400, "State mismatch; login was not completed.")
+                return
+            if "error" in query:
+                result["error"] = query["error"]
+                self._respond(400, query["error"])
                 return
             result.update(query)
-            self.send_response(200)
+            self._respond(200, None)
+
+        def _respond(self, status: int, failure_message: str | None) -> None:
+            self.send_response(status)
             self.send_header("Content-Type", "text/html")
             self.end_headers()
-            self.wfile.write(SUCCESS_HTML.encode())
+            body = SUCCESS_HTML if failure_message is None else FAILURE_HTML.format(message=failure_message)
+            self.wfile.write(body.encode())
 
         def log_message(self, *args) -> None:
             pass
 
     with HTTPServer((host, port), Handler) as server:
-        server.timeout = timeout
-        server.handle_request()
+        deadline = time.monotonic() + timeout
+        while not result and time.monotonic() < deadline:
+            server.timeout = max(deadline - time.monotonic(), 0)
+            server.handle_request()
+    if result.get("state_mismatch"):
+        raise AuthError("Callback state did not match; login aborted (possible CSRF or a stale browser tab).")
     if result.get("error"):
         raise AuthError(f"Spotify returned error: {result['error']}")
     if "code" not in result:

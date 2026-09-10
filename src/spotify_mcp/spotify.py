@@ -31,7 +31,10 @@ class SpotifyClient:
 
     async def _access_token(self) -> str:
         async with self._lock:
-            token = auth.load_token(self.settings)
+            try:
+                token = auth.load_token(self.settings)
+            except auth.AuthError as e:
+                raise ToolError(str(e)) from e
             if token is None:
                 raise ToolError(NOT_LOGGED_IN_MESSAGE)
             if token.expired:
@@ -41,6 +44,8 @@ class SpotifyClient:
                     token = await auth.refresh(self.http, self.settings, token)
                 except auth.AuthError as e:
                     raise ToolError(str(e)) from e
+                except (httpx.HTTPError, OSError, ValueError, TypeError) as e:
+                    raise ToolError(f"Could not refresh the Spotify token ({e}). Run `spotify-mcp login` again.") from e
             return token.access_token
 
     async def request(
@@ -51,24 +56,24 @@ class SpotifyClient:
         params: dict[str, Any] | None = None,
         json: Any = None,
         restricted: bool = False,
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any]:
         headers = {"Authorization": f"Bearer {await self._access_token()}"}
         r = await self.http.request(method, f"{API}{path}", params=params, json=json, headers=headers)
         if r.status_code == 429:
             if _reason(r) == "QUOTA_EXCEEDED":
                 raise ToolError(QUOTA_MESSAGE)
-            wait_s = min(int(r.headers.get("Retry-After", "1")), MAX_RETRY_AFTER_S)
+            wait_s = min(_retry_after_seconds(r), MAX_RETRY_AFTER_S)
             await asyncio.sleep(wait_s)
             r = await self.http.request(method, f"{API}{path}", params=params, json=json, headers=headers)
         if r.status_code == 403 and restricted:
             raise ToolError(RESTRICTED_MESSAGE)
-        if r.status_code == 403:
+        if r.status_code == 403 and "/playlists/" in path:
             raise ToolError(OWNERSHIP_MESSAGE)
         if r.status_code == 401:
             raise ToolError(REAUTH_MESSAGE)
         if r.status_code >= 400:
             raise ToolError(f"Spotify {r.status_code} on {method} {path}: {_message(r)}")
-        return r.json() if r.content else None
+        return r.json() if r.content else {}
 
 
 def _message(r: httpx.Response) -> str:
@@ -83,6 +88,11 @@ def _reason(r: httpx.Response) -> str | None:
         return r.json()["error"].get("reason")
     except Exception:
         return None
+
+
+def _retry_after_seconds(r: httpx.Response) -> int:
+    raw = r.headers.get("Retry-After", "1").strip()
+    return int(raw) if raw.isdigit() else 1
 
 
 def slim_track(t: dict[str, Any] | None) -> dict[str, Any]:
@@ -133,6 +143,8 @@ def slim_playlist(p: dict[str, Any] | None) -> dict[str, Any]:
         "id": p.get("id"),
         "uri": p.get("uri"),
         "name": p.get("name"),
+        "description": p.get("description"),
+        "url": (p.get("external_urls") or {}).get("spotify"),
         "owner": (p.get("owner") or {}).get("id"),
         "public": p.get("public"),
         "collaborative": p.get("collaborative"),
@@ -141,8 +153,8 @@ def slim_playlist(p: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
-def page(result: dict[str, Any], key: str = "items") -> dict[str, Any]:
-    items = result.get(key) or []
+def page(result: dict[str, Any]) -> dict[str, Any]:
+    items = result.get("items") or []
     offset = result.get("offset", 0)
     next_offset = offset + len(items) if result.get("next") else None
     return {"items": items, "total": result.get("total"), "next_offset": next_offset}

@@ -1,10 +1,8 @@
 import asyncio
-import os
 import secrets
 import time
 import webbrowser
 from enum import Enum
-from pathlib import Path
 from typing import Annotated
 
 import httpx
@@ -17,7 +15,7 @@ from rich.table import Table
 
 from . import auth
 from .server import build_server
-from .settings import DEFAULT_CONFIG_DIR, DEFAULT_REDIRECT_URI, SCOPES, Settings, SettingsError
+from .settings import SCOPES, Settings, SettingsError
 from .spotify import SpotifyClient
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
@@ -32,12 +30,7 @@ class Transport(str, Enum):
 
 
 def _env_settings() -> Settings:
-    return Settings(
-        client_id=os.environ.get("SPOTIFY_CLIENT_ID", ""),
-        client_secret=os.environ.get("SPOTIFY_CLIENT_SECRET", ""),
-        redirect_uri=os.environ.get("SPOTIFY_REDIRECT_URI", DEFAULT_REDIRECT_URI),
-        config_dir=Path(os.environ.get("SPOTIFY_MCP_CONFIG_DIR", str(DEFAULT_CONFIG_DIR))).expanduser(),
-    )
+    return Settings.from_env(require_credentials=False)
 
 
 def _require_settings() -> Settings:
@@ -87,10 +80,17 @@ def login() -> None:
 
     async def _whoami() -> dict:
         async with _new_http_client() as http:
-            return await SpotifyClient(settings, http).request("GET", "/me") or {}
+            return await SpotifyClient(settings, http).request("GET", "/me")
 
-    with console.status("[bold]Confirming account...", spinner="dots"):
-        user = asyncio.run(_whoami())
+    try:
+        with console.status("[bold]Confirming account...", spinner="dots"):
+            user = asyncio.run(_whoami())
+    except Exception as e:
+        console.print(
+            f"[yellow]Token cached, but GET /me failed: {e} — add your account under "
+            "Dashboard > Settings > User Management if this is a new Spotify app.[/yellow]"
+        )
+        return
     console.print(f"[bold {ACCENT}]Logged in as {user.get('display_name', user.get('id', 'unknown'))}[/bold {ACCENT}]")
 
 
@@ -184,17 +184,34 @@ def serve(
     ] = None,
     insecure_any_host: Annotated[
         bool,
-        typer.Option("--insecure-any-host", help="Disable DNS-rebinding protection entirely (local experiments only)."),
+        typer.Option(
+            "--insecure-any-host",
+            help=(
+                "Disable DNS-rebinding protection entirely (local experiments only). Also disables the Origin "
+                "allow-list — with MCP-level auth set to none, any website open in your browser can then drive "
+                "this server as your Spotify account."
+            ),
+        ),
     ] = False,
 ) -> None:
     """Run the MCP server: stdio (default, Codex/Claude Code) or streamable-http (ChatGPT)."""
-    settings = _require_settings()
+    settings = _env_settings()
     server = build_server(settings)
 
     if transport is Transport.stdio:
         console.print(f"[bold {ACCENT}]spotify-mcp[/bold {ACCENT}] serving over [bold]stdio[/bold]")
         server.run(transport="stdio")
         return
+
+    if insecure_any_host:
+        console.print(
+            Panel(
+                "DNS-rebinding protection AND the Origin allow-list are both disabled. Any website open in your "
+                "browser can now drive this server as your logged-in Spotify account.",
+                title="[bold red]--insecure-any-host[/bold red]",
+                border_style="red",
+            )
+        )
 
     hosts = ["127.0.0.1:*", "localhost:*"]
     for h in allow_host or []:

@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .env
 token.json
+token.*.tmp
 *.egg-info/
 .pytest_cache/
 .ruff_cache/

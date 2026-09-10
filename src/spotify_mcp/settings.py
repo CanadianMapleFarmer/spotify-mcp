@@ -29,22 +29,25 @@ class Settings:
     config_dir: Path = DEFAULT_CONFIG_DIR
 
     @classmethod
-    def from_env(cls) -> "Settings":
-        missing = [
-            name
-            for name in ("SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET")
-            if not os.environ.get(name)
-        ]
-        if missing:
-            raise SettingsError(
-                f"Missing required environment variable(s): {', '.join(missing)}. "
-                "Set them and re-run, e.g. `export SPOTIFY_CLIENT_ID=... SPOTIFY_CLIENT_SECRET=...`."
-            )
+    def from_env(cls, *, require_credentials: bool = True) -> "Settings":
+        client_id = os.environ.get("SPOTIFY_CLIENT_ID") or ""
+        client_secret = os.environ.get("SPOTIFY_CLIENT_SECRET") or ""
+        if require_credentials:
+            missing = [
+                name
+                for name, value in (("SPOTIFY_CLIENT_ID", client_id), ("SPOTIFY_CLIENT_SECRET", client_secret))
+                if not value
+            ]
+            if missing:
+                raise SettingsError(
+                    f"Missing required environment variable(s): {', '.join(missing)}. "
+                    "Set them and re-run, e.g. `export SPOTIFY_CLIENT_ID=... SPOTIFY_CLIENT_SECRET=...`."
+                )
         return cls(
-            client_id=os.environ["SPOTIFY_CLIENT_ID"],
-            client_secret=os.environ["SPOTIFY_CLIENT_SECRET"],
-            redirect_uri=os.environ.get("SPOTIFY_REDIRECT_URI", DEFAULT_REDIRECT_URI),
-            config_dir=Path(os.environ.get("SPOTIFY_MCP_CONFIG_DIR", str(DEFAULT_CONFIG_DIR))).expanduser(),
+            client_id=client_id,
+            client_secret=client_secret,
+            redirect_uri=os.environ.get("SPOTIFY_REDIRECT_URI") or DEFAULT_REDIRECT_URI,
+            config_dir=Path(os.environ.get("SPOTIFY_MCP_CONFIG_DIR") or str(DEFAULT_CONFIG_DIR)).expanduser(),
         )
 
     @property

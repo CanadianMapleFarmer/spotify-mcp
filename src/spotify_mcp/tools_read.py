@@ -20,9 +20,13 @@ from .tool_support import (
 
 SearchLimit = Annotated[int, Field(ge=1, le=10, description="Max results per requested type, 1-10 (Spotify cap).")]
 SearchOffset = Annotated[int, Field(ge=0, le=1000, description="Zero-based paging offset, max 1000.")]
+SearchTypes = Annotated[
+    list[Literal["track", "artist", "album", "playlist"]],
+    Field(min_length=1, max_length=4, description="Which entity types to search; at least one."),
+]
 IncludeGroup = Literal["album", "single", "appears_on", "compilation"]
 
-_SEARCH_MAPPERS = {"tracks": slim_track, "artists": slim_artist, "albums": slim_album}
+_SEARCH_MAPPERS = {"tracks": slim_track, "artists": slim_artist, "albums": slim_album, "playlists": slim_playlist}
 
 
 def register_read_tools(mcp: MCPServer) -> None:
@@ -55,7 +59,7 @@ def register_read_tools(mcp: MCPServer) -> None:
     async def search(
         ctx: Context[AppContext],
         q: Annotated[str, Field(description="Query text; supports artist:, track:, album:, year:, isrc: filters.")],
-        types: list[Literal["track", "artist", "album", "playlist"]] = ["track"],
+        types: SearchTypes = ["track"],
         limit: SearchLimit = 10,
         offset: SearchOffset = 0,
     ) -> dict[str, Any]:

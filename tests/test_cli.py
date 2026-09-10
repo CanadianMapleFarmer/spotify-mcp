@@ -4,9 +4,9 @@ import httpx
 from typer.testing import CliRunner
 
 import spotify_mcp.cli as cli
-from spotify_mcp.auth import Token, save_token
+from spotify_mcp.auth import Token, load_token, save_token
 from spotify_mcp.server import build_server
-from spotify_mcp.settings import Settings
+from spotify_mcp.settings import SCOPES, Settings
 
 runner = CliRunner()
 
@@ -57,6 +57,29 @@ def test_serve_help_mentions_both_transports():
     assert "streamable-http" in result.output
 
 
+def test_serve_starts_over_stdio_even_without_credentials(monkeypatch):
+    monkeypatch.delenv("SPOTIFY_CLIENT_ID", raising=False)
+    monkeypatch.delenv("SPOTIFY_CLIENT_SECRET", raising=False)
+    ran = {}
+
+    def fake_run(self, transport=None, **kwargs):
+        ran["transport"] = transport
+
+    monkeypatch.setattr("mcp.server.MCPServer.run", fake_run)
+    result = runner.invoke(cli.app, ["serve"])
+    assert result.exit_code == 0
+    assert ran["transport"] == "stdio"
+
+
+def test_serve_insecure_any_host_warns_about_origin_allowlist(monkeypatch):
+    monkeypatch.setenv("SPOTIFY_CLIENT_ID", "cid")
+    monkeypatch.setenv("SPOTIFY_CLIENT_SECRET", "csecret")
+    monkeypatch.setattr("mcp.server.MCPServer.run", lambda self, **kwargs: None)
+    result = runner.invoke(cli.app, ["serve", "--transport", "streamable-http", "--insecure-any-host"])
+    assert result.exit_code == 0
+    assert "Origin allow-list" in result.stderr
+
+
 def test_whoami_uses_mocked_client_factory(monkeypatch, tmp_path):
     monkeypatch.setenv("SPOTIFY_MCP_CONFIG_DIR", str(tmp_path))
     monkeypatch.setenv("SPOTIFY_CLIENT_ID", "cid")
@@ -97,3 +120,30 @@ def test_missing_env_reports_exit_1(monkeypatch, tmp_path):
     result = runner.invoke(cli.app, ["whoami"])
     assert result.exit_code == 1
     assert "SPOTIFY_CLIENT_ID" in result.stderr
+
+
+def test_login_warns_but_exits_0_when_me_confirmation_fails(monkeypatch, tmp_path):
+    monkeypatch.setenv("SPOTIFY_MCP_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("SPOTIFY_CLIENT_ID", "cid")
+    monkeypatch.setenv("SPOTIFY_CLIENT_SECRET", "csecret")
+    monkeypatch.setattr(cli.webbrowser, "open", lambda url: None)
+    monkeypatch.setattr(cli.auth, "wait_for_code", lambda settings, state: "code123")
+
+    async def fake_exchange_code(http, settings, code):
+        return Token("at", "rt", time.time() + 3600, " ".join(SCOPES), "cid")
+
+    monkeypatch.setattr(cli.auth, "exchange_code", fake_exchange_code)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403, json={"error": {"status": 403, "message": "User not registered in the Developer Dashboard"}}
+        )
+
+    monkeypatch.setattr(cli, "_new_http_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+
+    result = runner.invoke(cli.app, ["login"])
+    assert result.exit_code == 0
+    assert "Token cached, but GET /me failed" in result.stderr
+
+    settings = Settings(client_id="cid", client_secret="csecret", config_dir=tmp_path)
+    assert load_token(settings).access_token == "at"
