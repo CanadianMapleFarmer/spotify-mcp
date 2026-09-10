@@ -3,8 +3,10 @@ import time
 
 import httpx
 import pytest
+from mcp import Client
 
 from spotify_mcp.auth import Token, save_token
+from spotify_mcp.server import build_server
 from spotify_mcp.settings import Settings
 from spotify_mcp.spotify import SpotifyClient
 
@@ -59,3 +61,10 @@ def mock_http(fake):
 @pytest.fixture
 def spotify_client(logged_in, mock_http) -> SpotifyClient:
     return SpotifyClient(logged_in, mock_http)
+
+
+@pytest.fixture
+async def client(logged_in, fake):
+    server = build_server(logged_in, transport=httpx.MockTransport(fake.handler))
+    async with Client(server, raise_exceptions=True) as c:
+        yield c
