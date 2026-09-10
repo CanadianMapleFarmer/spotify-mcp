@@ -1,0 +1,28 @@
+[project]
+name = "spotify-mcp"
+version = "0.1.0"
+description = "Spotify MCP server (stdio + streamable HTTP) with a Typer CLI"
+requires-python = ">=3.13"
+dependencies = [
+    "mcp==2.2.0",
+    "httpx>=0.28",
+    "typer>=0.15",
+    "rich>=13",
+    "pydantic>=2",
+]
+
+[project.scripts]
+spotify-mcp = "spotify_mcp.cli:app"
+
+[dependency-groups]
+dev = ["pytest>=8", "anyio>=4"]
+
+[build-system]
+requires = ["uv_build>=0.9.26,<0.10"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+anyio_mode = "auto"
+markers = ["slow: spawns a subprocess"]
+addopts = "-m 'not slow'"
