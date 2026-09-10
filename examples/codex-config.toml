@@ -1,0 +1,23 @@
+# ~/.codex/config.toml
+# Codex env_clear()s stdio servers: only HOME/PATH/etc. plus these names/values get through.
+[mcp_servers.spotify-mcp]
+command = "uv"
+args = ["run", "--directory", "/path/to/spotify-mcp", "spotify-mcp", "serve"]
+env_vars = ["SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET", "SPOTIFY_REDIRECT_URI"]
+startup_timeout_sec = 60
+tool_timeout_sec = 120
+default_tools_approval_mode = "prompt"
+
+[mcp_servers.spotify-mcp.env]
+UV_NO_SYNC = "1"
+
+# auto-approve the read tools
+[mcp_servers.spotify-mcp.tools.search]
+approval_mode = "approve"
+[mcp_servers.spotify-mcp.tools.get_playlist_items]
+approval_mode = "approve"
+[mcp_servers.spotify-mcp.tools.list_my_playlists]
+approval_mode = "approve"
+
+# Prereqs: export SPOTIFY_CLIENT_ID=... SPOTIFY_CLIENT_SECRET=... in ~/.zshrc,
+# `uv sync` once in the repo, and `uv run spotify-mcp login` once.
