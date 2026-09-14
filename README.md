@@ -91,7 +91,7 @@ Regenerate this table with `uv run spotify-mcp tools`.
 
 ## Codex CLI
 
-Add the block from [`examples/codex-config.toml`](examples/codex-config.toml) to `~/.codex/config.toml`. Prereqs: `SPOTIFY_CLIENT_ID`/`SPOTIFY_CLIENT_SECRET` exported in `~/.zshrc` (Codex clears the environment for stdio servers and only forwards names listed in `env_vars`), `uv sync` run once, and `uv run spotify-mcp login` run once.
+Add the block from [`examples/codex-config.toml`](examples/codex-config.toml) to `~/.codex/config.toml`, replacing `/path/to/spotify-mcp` with where you cloned this repo. Use the absolute path from `which uv` as `command` if Codex cannot find `uv` on its PATH; the Codex desktop app in particular does not load your shell profile, so put the two Spotify values in the `[mcp_servers.spotify-mcp.env]` table instead of relying on `env_vars`. Prereqs: `SPOTIFY_CLIENT_ID`/`SPOTIFY_CLIENT_SECRET` exported in `~/.zshrc` (Codex clears the environment for stdio servers and only forwards names listed in `env_vars`), `uv sync` run once, and `uv run spotify-mcp login` run once.
 
 ```bash
 codex mcp get spotify-mcp
